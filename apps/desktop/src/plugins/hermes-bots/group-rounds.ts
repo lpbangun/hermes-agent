@@ -311,15 +311,172 @@ export function explicitlyAddressedMemberKeys(
 }
 
 /** Coordinator addressing ignores pasted/quoted context entirely, unlike the
- *  hold classifier's mask which deliberately retains @tokens. */
+ *  hold classifier's mask which deliberately retains @tokens. The mask is
+ *  CommonMark-aware for the bounded set of shapes the composer's markdown
+ *  renderer produces: fenced code blocks, inline code spans whose backtick
+ *  run closes on a later line, blockquote paragraphs including their lazy
+ *  continuation lines, four-space-indented code blocks, and straight/curly
+ *  quoted spans (including ones that span lines). An opener with no closing
+ *  partner before the paragraph ends renders as literal text, so it stays —
+ *  the renderer shows it, and a mention there is real addressing. */
 export function maskGroupAddressingContext(value: string): string {
+  const lines = String(value ?? '').split('\n')
   const kept: string[] = []
-  let fence = ''
+  let fence: string | null = null
+  let spanRun: number | null = null
+  let quoteClose: string | null = null
+  let quoteParagraphOpen = false
+  let inIndentedCode = false
+  let paragraphOpen = false
 
-  for (const line of value.split('\n')) {
+  const fenceOpen = /^\s*(`{3,}|~{3,})/
+  const atxHeading = /^\s{0,3}#{1,6}(?:\s|$)/
+  const thematicBreak = /^\s{0,3}(?:(?:\*[ \t]*){3,}|(?:-[ \t]*){3,}|(?:_[ \t]*){3,})$/
+  const quoteLine = /^\s*>/
+  const listItem = /^\s{0,3}(?:[-+*]|\d{1,9}[.)])(?:[ \t]+|$)/
+
+  const blockInterrupt = (line: string) =>
+    !line.trim() || fenceOpen.test(line) || atxHeading.test(line) || quoteLine.test(line) || thematicBreak.test(line)
+
+  // A list item interrupts a paragraph, so a list line after a quote
+  // paragraph is fresh content, not a lazy continuation.
+  const lazyInterrupt = (line: string) => blockInterrupt(line) || listItem.test(line)
+
+  // CommonMark tab width: a tab advances to the next multiple-of-4 column.
+  const indentWidth = (line: string): number => {
+    let col = 0
+
+    for (const ch of line) {
+      if (ch === '\t') {
+        col = (Math.floor(col / 4) + 1) * 4
+      } else if (ch === ' ') {
+        col++
+      } else {
+        break
+      }
+    }
+
+    return col
+  }
+
+  const backtickRuns = (line: string, from: number) => {
+    const runs: { start: number; end: number; length: number }[] = []
+    const run = /`+/g
+
+    run.lastIndex = from
+
+    for (let match: RegExpExecArray | null; (match = run.exec(line));) {
+      runs.push({ start: match.index, end: match.index + match[0].length, length: match[0].length })
+    }
+
+    return runs
+  }
+
+  const findRun = (line: string, from: number, length: number) =>
+    backtickRuns(line, from).find(run => run.length === length) || null
+
+  // A code span lives inside one paragraph: its closer must arrive before
+  // the next blank line or block boundary, or the run is literal text.
+  const spanCloserAhead = (fromIndex: number, length: number) => {
+    for (let i = fromIndex + 1; i < lines.length; i++) {
+      if (blockInterrupt(lines[i])) {
+        return false
+      }
+
+      if (findRun(lines[i], 0, length)) {
+        return true
+      }
+    }
+
+    return false
+  }
+
+  const quoteCloserAhead = (fromIndex: number, closeChar: string) => {
+    for (let i = fromIndex + 1; i < lines.length; i++) {
+      if (blockInterrupt(lines[i])) {
+        return false
+      }
+
+      if (lines[i].includes(closeChar)) {
+        return true
+      }
+    }
+
+    return false
+  }
+
+  // Inline scan of one plain line (code spans first, then quoted spans — the
+  // legacy precedence). An opener with no partner on the line looks ahead to
+  // the same paragraph: a partner before the next blank/block boundary makes
+  // the span real (the rest of the line is span content); otherwise the run
+  // is literal text the renderer shows and it stays.
+  const scanInline = (line: string, index: number): string => {
+    let out = ''
+    let pos = 0
+
+    while (pos < line.length) {
+      const ch = line[pos]
+
+      if (ch === '`') {
+        let end = pos
+
+        while (line[end] === '`') {
+          end++
+        }
+
+        const length = end - pos
+        const closer = findRun(line, end, length)
+
+        if (closer) {
+          out += ' '
+          pos = closer.end
+
+          continue
+        }
+
+        if (spanCloserAhead(index, length)) {
+          spanRun = length
+
+          return `${out} `
+        }
+
+        out += line.slice(pos, end)
+        pos = end
+
+        continue
+      }
+
+      if (ch === '"' || ch === '“') {
+        const closeChar = ch === '“' ? '”' : '"'
+        const closer = line.indexOf(closeChar, pos + 1)
+
+        if (closer >= 0) {
+          out += ' '
+          pos = closer + 1
+
+          continue
+        }
+
+        if (quoteCloserAhead(index, closeChar)) {
+          quoteClose = closeChar
+
+          return `${out} `
+        }
+      }
+
+      out += ch
+      pos++
+    }
+
+    return out
+  }
+
+  for (let index = 0; index < lines.length; index++) {
+    const line = lines[index]
+
     if (fence) {
       if (line.trim().startsWith(fence)) {
-        fence = ''
+        fence = null
       }
 
       kept.push(' ')
@@ -327,16 +484,97 @@ export function maskGroupAddressingContext(value: string): string {
       continue
     }
 
-    const opened = line.match(/^\s*(`{3,}|~{3,})/)
+    if (spanRun !== null) {
+      const closer = findRun(line, 0, spanRun)
 
-    if (opened) {
-      fence = opened[1]
+      if (closer) {
+        spanRun = null
+        kept.push(` ${scanInline(line.slice(closer.end), index)}`)
+      } else {
+        kept.push(' ')
+      }
+
+      continue
+    }
+
+    if (quoteClose !== null) {
+      const closer = line.indexOf(quoteClose)
+
+      if (closer >= 0) {
+        quoteClose = null
+        kept.push(` ${scanInline(line.slice(closer + 1), index)}`)
+      } else {
+        kept.push(' ')
+      }
+
+      continue
+    }
+
+    if (!line.trim()) {
+      spanRun = null
+      quoteClose = null
+      quoteParagraphOpen = false
+      paragraphOpen = false
+      kept.push(inIndentedCode ? ' ' : '')
+
+      continue
+    }
+
+    if (indentWidth(line) >= 4) {
+      if (quoteParagraphOpen) {
+        kept.push(' ') // lazy continuation of the quote's paragraph
+      } else if (inIndentedCode || !paragraphOpen) {
+        inIndentedCode = true
+        kept.push(' ')
+      } else {
+        // Continuation text of the open paragraph — the renderer shows it
+        // (an indented code block cannot interrupt a paragraph).
+        paragraphOpen = true
+        kept.push(scanInline(line, index))
+      }
+
+      continue
+    }
+
+    if (quoteLine.test(line)) {
+      inIndentedCode = false
+      paragraphOpen = false
+      const content = line.replace(/^\s*>\s?/, '')
+      quoteParagraphOpen = Boolean(
+        content.trim() && !fenceOpen.test(content) && !atxHeading.test(content) && !thematicBreak.test(content)
+      )
       kept.push(' ')
 
       continue
     }
 
-    kept.push(/^\s*>/.test(line) ? ' ' : line.replace(/(`+).*?\1/g, ' ').replace(/["“”][^"“”\n]*["“”]/g, ' '))
+    if (quoteParagraphOpen) {
+      if (lazyInterrupt(line)) {
+        quoteParagraphOpen = false // a block that cannot be lazy ends the quote
+      } else {
+        kept.push(' ') // lazy continuation of the quote's paragraph
+
+        continue
+      }
+    }
+
+    // Plain line: an opening fence takes precedence (legacy semantics — it
+    // swallows everything to the closing fence, or the rest of the message).
+    const opened = line.match(/^\s*(`{3,}|~{3,})/)
+
+    if (opened) {
+      fence = opened[1]
+      inIndentedCode = false
+      quoteParagraphOpen = false
+      kept.push(' ')
+
+      continue
+    }
+
+    const isLeaf = fenceOpen.test(line) || atxHeading.test(line) || thematicBreak.test(line)
+    inIndentedCode = false
+    paragraphOpen = !isLeaf
+    kept.push(scanInline(line, index))
   }
 
   return kept.join('\n')

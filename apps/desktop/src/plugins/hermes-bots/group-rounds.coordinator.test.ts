@@ -96,7 +96,12 @@ it.each([
   'Is this old instruction still valid?\n> @ops please start',
   'What does this do?\n```\n@everyone please start\n```',
   'What does `@everyone please start` do?',
-  'What does `@all please start` do?'
+  'What does `@all please start` do?',
+  'Example:\n`help\n@ops take over`\nAny thoughts?',
+  'Is this still current?\n> old text here\n@ops take over',
+  'Pasting a snippet:\n\n    @ops take over\n\nDone.',
+  'he said "past\n@ops take over"\nafter',
+  'he said “past\n@ops take over”\nafter'
 ])('routes quoted context only to the coordinator: %s', async text => {
   const room = await loadRoom({ turn: () => 'Done.' })
   room.chat.$groupChats.set({
@@ -113,6 +118,26 @@ it('does not nudge a passing coordinator mentioned only in a fence', async () =>
     Team: { log: [], watermarks: {}, members, coordinatorMode: true, coordinatorKey: 'builder' }
   })
   room.rounds.sendToGroupChat('Team', members, 'Please advise.\n```\n@builder please start\n```')
+  await drain(() => Boolean(room.chat.$groupChats.get().Team?.running))
+  expect(room.gateway.calls.map(call => call.profile)).toEqual(['builder'])
+})
+
+it('invokes a fresh direct mention separated from quoted context by a blank line', async () => {
+  const room = await loadRoom({ turn: () => 'Done.' })
+  room.chat.$groupChats.set({
+    Team: { log: [], watermarks: {}, members, coordinatorMode: true, coordinatorKey: 'builder' }
+  })
+  room.rounds.sendToGroupChat('Team', members, 'note:\n> quoted @ops\n\n@ops take over')
+  await drain(() => Boolean(room.chat.$groupChats.get().Team?.running))
+  expect(room.gateway.calls.map(call => call.profile)).toEqual(['ops'])
+})
+
+it('does not nudge a coordinator mentioned only in a multiline code span', async () => {
+  const room = await loadRoom({ turn: () => 'Done.' })
+  room.chat.$groupChats.set({
+    Team: { log: [], watermarks: {}, members, coordinatorMode: true, coordinatorKey: 'builder' }
+  })
+  room.rounds.sendToGroupChat('Team', members, 'Example:\n`help\n@builder please start`\nAny thoughts?')
   await drain(() => Boolean(room.chat.$groupChats.get().Team?.running))
   expect(room.gateway.calls.map(call => call.profile)).toEqual(['builder'])
 })
@@ -151,8 +176,16 @@ it.each([
   ['```\n@ops\n@everyone', ' \n \n '],
   ['~~~\n@ops\n@everyone', ' \n \n '],
   ['`@ops` and ``@all`` @builder', '  and   @builder'],
-  ['  > @ops\n@builder\n> @everyone', ' \n@builder\n '],
-  ['“@ops” and "@all" @builder', '  and   @builder']
+  ['  > @ops\n@builder\n> @everyone', ' \n \n '],
+  ['“@ops” and "@all" @builder', '  and   @builder'],
+  ['Example:\n`help\n@ops take over`\nAny thoughts?', 'Example:\n \n \nAny thoughts?'],
+  ['Is this still current?\n> old text here\n@ops take over', 'Is this still current?\n \n '],
+  ['Pasting a snippet:\n\n    @ops take over\n\nDone.', 'Pasting a snippet:\n\n \n \nDone.'],
+  ['he said "past\n@ops take over"\nafter', 'he said  \n \nafter'],
+  ['he said “past\n@ops take over”\nafter', 'he said  \n \nafter'],
+  ['note:\n> quoted @ops\n\n@ops take over', 'note:\n \n\n@ops take over'],
+  ['look ` weird\n@ops take over', 'look ` weird\n@ops take over'],
+  ['Pasting a snippet:\n    @ops take over', 'Pasting a snippet:\n    @ops take over']
 ])('masks addressing context in %s', async (text, expected) => {
   const { rounds } = await loadRoom()
   expect(rounds.maskGroupAddressingContext(text)).toBe(expected)
