@@ -199,6 +199,12 @@ export interface GroupChat {
   /** Whether user text may create sticky member holds. Defaults to true for
    *  rooms written by older builds; the room settings switch can disable it. */
   holdDetection?: boolean
+  /** Opt-in coordinator-led routing: an unaddressed user send wakes ONLY the resolved
+   *  coordinator member, and member replies can never widen a round. Absent/false keeps
+   *  ordinary discussion behavior for the room. */
+  coordinatorMode?: boolean
+  /** Durable member key (`groupMemberKey`) of the resolved coordinator. */
+  coordinatorKey?: string | null
   /** Bumped to abandon in-flight member turns from a previous round. */
   epoch?: number
   /** Room-entry ids consumed while a member was held, replayed into that

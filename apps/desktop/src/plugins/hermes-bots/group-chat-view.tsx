@@ -67,6 +67,7 @@ import {
   groupThreadOf,
   rememberGroupChatTombstone,
   scheduleGroupChatServerSync,
+  setGroupChatCoordinatorPolicy,
   setGroupChatHoldDetection,
   setGroupChatImage,
   updateGroupChat
@@ -399,6 +400,10 @@ function GroupChatSettingsDialog({
   const currentHoldDetection = (rooms[group] || {}).holdDetection !== false
   const [name, setName] = useState(group)
   const [image, setImage] = useState(current)
+  const currentCoordinatorMode = rooms[group]?.coordinatorMode === true
+  const currentCoordinatorKey = rooms[group]?.coordinatorKey || ''
+  const [coordinatorMode, setCoordinatorMode] = useState(currentCoordinatorMode)
+  const [coordinatorKey, setCoordinatorKey] = useState(currentCoordinatorKey)
   const [holdDetection, setHoldDetection] = useState(currentHoldDetection)
   const [compressing, setCompressing] = useState<null | string>(null)
   useEffect(() => {
@@ -406,6 +411,8 @@ function GroupChatSettingsDialog({
       setName(group)
       setImage(current)
       setHoldDetection(currentHoldDetection)
+      setCoordinatorMode(currentCoordinatorMode)
+      setCoordinatorKey(currentCoordinatorKey)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open, group])
@@ -455,6 +462,10 @@ function GroupChatSettingsDialog({
       setGroupChatHoldDetection(finalName, holdDetection)
     }
 
+    if (coordinatorMode !== currentCoordinatorMode || coordinatorKey !== currentCoordinatorKey) {
+      setGroupChatCoordinatorPolicy(finalName, coordinatorMode, coordinatorKey)
+    }
+
     onClose()
 
     if (finalName !== group) {
@@ -502,6 +513,34 @@ function GroupChatSettingsDialog({
           label={b.group.holdDetection}
           onChange={setHoldDetection}
         />
+        <ToggleRow
+          checked={coordinatorMode}
+          description={b.group.coordinatorModeHint}
+          label={b.group.coordinatorMode}
+          onChange={enabled => {
+            setCoordinatorMode(enabled)
+
+            if (enabled && !coordinatorKey) {
+              setCoordinatorKey(members?.[0] ? groupMemberKey(members[0]) : '')
+            }
+          }}
+        />
+        {coordinatorMode ? (
+          <label className="flex flex-col gap-2 text-sm">
+            {b.group.coordinatorLabel}
+            <select
+              className="border-input bg-background rounded-md border px-3 py-2 text-sm"
+              onChange={event => setCoordinatorKey(event.target.value)}
+              value={coordinatorKey}
+            >
+              {(members || []).map(member => (
+                <option key={groupMemberKey(member)} value={groupMemberKey(member)}>
+                  {displayName(member, botRosterMeta(member, $botMeta.get()))}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : null}
         {(members || []).length > 0 ? (
           <ul className="flex flex-col gap-1" data-testid="group-settings-members">
             {(members || []).map(member => {

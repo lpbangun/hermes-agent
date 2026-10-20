@@ -256,6 +256,9 @@ type BotsMessages = {
     settingsTitle: string
     settingsDesc: string
     nameLabel: string
+    coordinatorMode: string
+    coordinatorModeHint: string
+    coordinatorLabel: string
     holdDetection: string
     holdDetectionHint: string
     compressHistory: string
@@ -700,6 +703,9 @@ const en: BotsMessages = {
     settingsTitle: 'Group settings',
     settingsDesc: 'Rename the group or set a room picture. Members and history are kept.',
     nameLabel: 'Group name',
+    coordinatorMode: 'Coordinator-led room',
+    coordinatorModeHint: 'Unaddressed messages wake only the coordinator; members cannot summon each other.',
+    coordinatorLabel: 'Coordinator',
     holdDetection: 'Detect stop directives',
     holdDetectionHint: 'Let room messages put addressed members on hold until they are mentioned again.',
     compressHistory: 'Compress history',
@@ -1140,6 +1146,10 @@ const ja: BotsMessages = {
     settingsTitle: 'グループ設定',
     settingsDesc: 'グループ名の変更や部屋の画像の設定ができます。メンバーと履歴は保持されます。',
     nameLabel: 'グループ名',
+    coordinatorMode: 'コーディネーター主導',
+    coordinatorModeHint:
+      '宛先のないメッセージはコーディネーターだけを起こします。メンバー同士の呼び出しは行われません。',
+    coordinatorLabel: 'コーディネーター',
     holdDetection: '停止指示を検出',
     holdDetectionHint: 'ルームのメッセージで、再びメンションされるまで対象メンバーを保留にします。',
     compressHistory: '履歴を圧縮',
@@ -1573,6 +1583,9 @@ const zh: BotsMessages = {
     settingsTitle: '群组设置',
     settingsDesc: '重命名群组或设置房间图片。成员和历史都会保留。',
     nameLabel: '群组名称',
+    coordinatorMode: '协调者主导',
+    coordinatorModeHint: '未指定成员的消息只唤醒协调者；成员无法互相点名。',
+    coordinatorLabel: '协调者',
     holdDetection: '检测停止指令',
     holdDetectionHint: '允许房间消息将指定成员保持暂停，直到再次提及该成员。',
     compressHistory: '压缩历史',
@@ -1999,6 +2012,9 @@ const zhHant: BotsMessages = {
     settingsTitle: '群組設定',
     settingsDesc: '重新命名群組或設定房間圖片。成員和歷史都會保留。',
     nameLabel: '群組名稱',
+    coordinatorMode: '協調者主導',
+    coordinatorModeHint: '未指定成員的訊息只喚醒協調者；成員無法互相點名。',
+    coordinatorLabel: '協調者',
     holdDetection: '偵測停止指令',
     holdDetectionHint: '允許房間訊息暫停指定成員，直到再次提及該成員。',
     compressHistory: '壓縮歷史',

@@ -60,6 +60,8 @@ let groupChatSyncTimer: ReturnType<typeof setTimeout> | null = null
  *  identity fields, without any of `GroupChat`'s runtime/orchestration state. */
 interface GroupChatSyncRoom {
   holdDetection?: boolean
+  coordinatorMode?: boolean
+  coordinatorKey?: string
   image?: null | string
   log: GroupMessage[]
   members?: GroupMember[]
@@ -355,6 +357,9 @@ export function groupChatSyncSnapshot(
         : {}),
       log,
       holdDetection: room.holdDetection !== false,
+      ...(room.coordinatorMode === true
+        ? { coordinatorMode: true, coordinatorKey: String(room.coordinatorKey || '').slice(0, 256) }
+        : {}),
       revision: Math.max(0, Number(room?.syncRevision ?? room?.revision ?? 0)),
       members: (Array.isArray(room.members) ? room.members : []).slice(0, GROUP_CHAT_MAX_MEMBERS).map(member => ({
         name: String(member?.name || '').slice(0, 128),
@@ -572,7 +577,15 @@ export function mergeGroupChatSyncSnapshots(
         : remoteRoom?.holdDetection !== false
     }
 
+    const coordinatorIdentity =
+      localRevision === remoteRevision && !Object.prototype.hasOwnProperty.call(localRoom || {}, 'coordinatorMode')
+        ? remoteRoom
+        : identity
+
     rooms[key] = {
+      ...(coordinatorIdentity?.coordinatorMode === true
+        ? { coordinatorMode: true, coordinatorKey: String(coordinatorIdentity.coordinatorKey || '') }
+        : {}),
       ...(identity?.name
         ? {
             name: identity.name
@@ -823,6 +836,14 @@ export function mergeRemoteGroupChatSnapshotIntoRooms(
         !isPreserved && remoteRevision >= localRevision
           ? projected.holdDetection !== false
           : existing.holdDetection !== false,
+      coordinatorMode:
+        !isPreserved && remoteRevision >= localRevision
+          ? projected.coordinatorMode === true
+          : existing.coordinatorMode === true,
+      coordinatorKey:
+        !isPreserved && remoteRevision >= localRevision
+          ? projected.coordinatorKey || ''
+          : existing.coordinatorKey || '',
       watermarks: bounded.watermarks,
       sessions: existing.sessions && typeof existing.sessions === 'object' ? existing.sessions : {},
       stranded: existing.stranded && typeof existing.stranded === 'object' ? existing.stranded : {},
@@ -908,6 +929,9 @@ export function durableGroupChatRooms(all: Record<string, GroupChat> = $groupCha
     durable[name] = {
       log: room.log,
       holdDetection: room.holdDetection !== false,
+      // Keep the routing identity across reloads.
+      coordinatorMode: room.coordinatorMode === true,
+      coordinatorKey: room.coordinatorKey || null,
       heldMessages: room.heldMessages || {},
       watermarks: room.watermarks || {},
       sessions: room.sessions || {},
@@ -1617,6 +1641,9 @@ export function updateGroupChat(
       durable[name] = {
         log: room.log,
         holdDetection: room.holdDetection !== false,
+        // Keep the routing identity across reloads.
+        coordinatorMode: room.coordinatorMode === true,
+        coordinatorKey: room.coordinatorKey || null,
         heldMessages: room.heldMessages || {},
         watermarks: room.watermarks,
         sessions: room.sessions || {},
@@ -1689,6 +1716,17 @@ export function setGroupChatHoldDetection(group: string, enabled: boolean) {
     ...room,
     holdDetection: enabled,
     ...(enabled ? {} : { holds: {} })
+  }))
+}
+
+/** Set or clear a room's coordinator-led routing policy. `memberKey` (a durable
+ *  groupMemberKey) is stored so the resolved coordinator survives save/reload and
+ *  cross-Desktop sync; disabling clears it. */
+export function setGroupChatCoordinatorPolicy(group: string, enabled: boolean, memberKey?: string | null) {
+  return updateGroupChat(group, (room: GroupChatRoom) => ({
+    ...room,
+    coordinatorMode: enabled,
+    coordinatorKey: enabled ? memberKey || null : null
   }))
 }
 

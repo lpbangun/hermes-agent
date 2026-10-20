@@ -1,5 +1,5 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
-import type { ReactNode } from 'react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import type { ComponentProps, ReactNode } from 'react'
 import { afterEach, expect, it, vi } from 'vitest'
 
 import { translateBots } from './i18n-test-helper'
@@ -11,11 +11,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
   const { pluginSdkMock, createGroupGateway } = await import('./group-test-utils')
   const base = await pluginSdkMock(createGroupGateway().host)
 
-  const Button = ({ children, onClick, title }: { children?: ReactNode; onClick?: () => void; title?: string }) => (
-    <button onClick={onClick} title={title}>
-      {children}
-    </button>
-  )
+  const Button = ({ children, ...props }: ComponentProps<'button'>) => <button {...props}>{children}</button>
 
   return {
     ...base,
@@ -25,19 +21,33 @@ vi.mock('@hermes/plugin-sdk', async () => {
     Codicon: () => null,
     CopyButton: () => null,
     ConfirmDialog: () => null,
-    Dialog: () => null,
-    DialogContent: () => null,
-    DialogDescription: () => null,
-    DialogFooter: () => null,
-    DialogHeader: () => null,
-    DialogTitle: () => null,
-    Input: () => null,
+    Dialog: ({ children, open }: { children: ReactNode; open: boolean }) =>
+      open ? <div role="dialog">{children}</div> : null,
+    DialogContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+    DialogDescription: ({ children }: { children: ReactNode }) => <p>{children}</p>,
+    DialogFooter: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+    DialogHeader: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+    DialogTitle: ({ children }: { children: ReactNode }) => <h2>{children}</h2>,
+    Input: (props: ComponentProps<'input'>) => <input {...props} />,
     MessageTextContent: ({ media = true, text }: { media?: boolean; text: string }) => (
       <span data-media={String(media)} data-testid="message-text-content">
         {text}
       </span>
     ),
-    ToggleRow: () => null,
+    ToggleRow: ({
+      checked,
+      label,
+      onChange
+    }: {
+      checked: boolean
+      label: string
+      onChange: (value: boolean) => void
+    }) => (
+      <label>
+        <input checked={checked} onChange={event => onChange(event.target.checked)} type="checkbox" />
+        {label}
+      </label>
+    ),
     Tip: ({ children }: { children: ReactNode }) => children,
     relativeTime: () => 'now',
     useI18n: () => ({ t: { common: { cancel: 'Cancel', save: 'Save' } } }),
@@ -51,6 +61,40 @@ vi.mock('./group-chat-parts', () => ({
   GroupMentionInput: () => null
 }))
 afterEach(cleanup)
+
+it('saves a selected coordinator and preserves it across durable rehydration', async () => {
+  Element.prototype.scrollIntoView = vi.fn()
+
+  const [chat, shared, utils, { GroupChatWorkspace }] = await Promise.all([
+    import('./group-chat'),
+    import('./shared'),
+    import('./group-test-utils'),
+    import('./group-chat-view')
+  ])
+
+  const storage = new Map<string, unknown>()
+  shared.setPluginCtx(utils.scriptedStorage(storage))
+  const members = [{ name: 'research' }, { name: 'builder' }, { name: 'ops' }]
+  chat.$groupChats.set({ Policy: { log: [], members, sessions: {}, watermarks: {} } })
+  const view = render(<GroupChatWorkspace group="Policy" members={members} />)
+  fireEvent.click(await screen.findByRole('button', { name: 'Group settings for Policy' }))
+  fireEvent.click(screen.getByRole('checkbox', { name: 'Coordinator-led room' }))
+  expect((screen.getByRole('combobox', { name: 'Coordinator' }) as HTMLSelectElement).value).toBe('research')
+  fireEvent.change(screen.getByRole('combobox', { name: 'Coordinator' }), { target: { value: 'ops' } })
+  fireEvent.click(screen.getByRole('button', { name: 'Save' }))
+  await waitFor(() =>
+    expect(chat.$groupChats.get().Policy).toMatchObject({ coordinatorMode: true, coordinatorKey: 'ops' })
+  )
+  view.unmount()
+  const durable = storage.get('group-chats') as ReturnType<typeof chat.durableGroupChatRooms>
+  chat.$groupChats.set({})
+  chat.$groupChats.set(JSON.parse(JSON.stringify(durable)))
+  render(<GroupChatWorkspace group="Policy" members={members} />)
+  fireEvent.click(await screen.findByRole('button', { name: 'Group settings for Policy' }))
+  expect((screen.getByRole('checkbox', { name: 'Coordinator-led room' }) as HTMLInputElement).checked).toBe(true)
+  expect((screen.getByRole('combobox', { name: 'Coordinator' }) as HTMLSelectElement).value).toBe('ops')
+  shared.setPluginCtx(null)
+})
 
 it('renders member replies through the shell message renderer, resolving media only for members on this gateway', async () => {
   Element.prototype.scrollIntoView = vi.fn()

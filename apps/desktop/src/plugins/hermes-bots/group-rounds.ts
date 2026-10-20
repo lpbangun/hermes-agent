@@ -204,6 +204,60 @@ export function resolveGroupResponders(log: GroupMessage[], members: GroupMember
   return members.filter(member => mentioned.has(groupMemberKey(member)))
 }
 
+export interface GroupCoordinatorPolicy {
+  enabled: boolean
+  memberKey?: string | null
+}
+
+export function resolveGroupCoordinator(members: GroupMember[], policy: GroupCoordinatorPolicy): GroupMember | null {
+  const key = String(policy.memberKey || '')
+
+  const matches = policy.enabled && key ? members.filter(member => groupMemberKey(member) === key) : []
+
+  return matches.length === 1 ? matches[0] : null
+}
+
+export function resolveCoordinatorResponders(
+  log: GroupMessage[],
+  members: GroupMember[],
+  policy: GroupCoordinatorPolicy
+): { responders: GroupMember[] } | { error: 'coordinator_unresolved' } {
+  const lastUser = log.findLastIndex(entry => entry.from.kind === 'user')
+  const mentioned = new Set<string>()
+  let everyone = false
+
+  for (const entry of lastUser < 0 ? [] : log.slice(lastUser)) {
+    if (entry.from.kind !== 'user') {
+      continue
+    }
+
+    const parsed = parseGroupChatMentions(maskGroupAddressingContext(entry.text), members)
+    everyone ||= parsed.everyone
+
+    for (const key of parsed.mentioned) {
+      mentioned.add(key)
+    }
+  }
+
+  if (everyone) {
+    return { responders: members }
+  }
+
+  if (mentioned.size) {
+    return { responders: members.filter(member => mentioned.has(groupMemberKey(member))) }
+  }
+
+  const coordinator = resolveGroupCoordinator(members, policy)
+
+  return coordinator ? { responders: [coordinator] } : { error: 'coordinator_unresolved' }
+}
+
+function groupCoordinatorPolicy(group: string): GroupCoordinatorPolicy {
+  const room = $groupChats.get()[group]
+
+  return { enabled: room?.coordinatorMode === true, memberKey: room?.coordinatorKey || null }
+}
+
 /** #129443: member keys the thread's user sends EXPLICITLY addressed —
  *  @everyone expands to every member, a bare @mention to just the mentioned
  *  ones, and a send with no mention at all to nobody (that turn is
@@ -212,7 +266,11 @@ export function resolveGroupResponders(log: GroupMessage[], members: GroupMember
  *  #94478 continuation's business, not this addressing state. This is the
  *  structured address the pass path consults, so a directly addressed
  *  member can never settle the room silently. */
-export function explicitlyAddressedMemberKeys(log: GroupMessage[], members: GroupMember[]) {
+export function explicitlyAddressedMemberKeys(
+  log: GroupMessage[],
+  members: GroupMember[],
+  options: { coordinatorLed?: boolean } = {}
+) {
   let sinceLastUser: GroupMessage[] = []
 
   for (let i = log.length - 1; i >= 0; i--) {
@@ -231,7 +289,8 @@ export function explicitlyAddressedMemberKeys(log: GroupMessage[], members: Grou
       continue
     }
 
-    const parsed = parseGroupChatMentions(entry.text, members)
+    const text = options.coordinatorLed ? maskGroupAddressingContext(entry.text) : entry.text
+    const parsed = parseGroupChatMentions(text, members)
 
     if (parsed.everyone) {
       everyone = true
@@ -249,6 +308,38 @@ export function explicitlyAddressedMemberKeys(log: GroupMessage[], members: Grou
   }
 
   return keys
+}
+
+/** Coordinator addressing ignores pasted/quoted context entirely, unlike the
+ *  hold classifier's mask which deliberately retains @tokens. */
+export function maskGroupAddressingContext(value: string): string {
+  const kept: string[] = []
+  let fence = ''
+
+  for (const line of value.split('\n')) {
+    if (fence) {
+      if (line.trim().startsWith(fence)) {
+        fence = ''
+      }
+
+      kept.push(' ')
+
+      continue
+    }
+
+    const opened = line.match(/^\s*(`{3,}|~{3,})/)
+
+    if (opened) {
+      fence = opened[1]
+      kept.push(' ')
+
+      continue
+    }
+
+    kept.push(/^\s*>/.test(line) ? ' ' : line.replace(/(`+).*?\1/g, ' ').replace(/["“”][^"“”\n]*["“”]/g, ' '))
+  }
+
+  return kept.join('\n')
 }
 
 /** Rotate the roster so a different member leads each round. */
@@ -635,7 +726,9 @@ export async function runGroupChatRounds(
   // drive — mid-drive member handoffs stay the #94478 continuation's job.
   const startLog = (($groupChats.get()[group] || {}).log || []).filter((e: GroupMessage) => groupThreadOf(e) === thread)
 
-  const addressedKeys = explicitlyAddressedMemberKeys(startLog, members)
+  const coordinatorPolicy = groupCoordinatorPolicy(group)
+  const coordinatorLed = coordinatorPolicy.enabled
+  const addressedKeys = explicitlyAddressedMemberKeys(startLog, members, { coordinatorLed })
 
   const context = {
     get group() {
@@ -658,6 +751,20 @@ export async function runGroupChatRounds(
   let exitKind: 'capped' | 'settled' = 'settled'
 
   try {
+    const coordinatorFailure = () =>
+      recordGroupActivity(group, {
+        kind: 'failed',
+        member: null,
+        thread,
+        reason: 'coordinator-led room has no resolvable coordinator'
+      })
+
+    if (coordinatorLed && !resolveGroupCoordinator(members, coordinatorPolicy)) {
+      coordinatorFailure()
+
+      return
+    }
+
     for (let round = 0; round < GROUP_CHAT_MAX_ROUNDS; round++) {
       // Deliver any replies that finished after their turn timed out —
       // every member, not just this round's responders, so long work is
@@ -698,7 +805,17 @@ export async function runGroupChatRounds(
       // {before, thread} post-thread.
       const strandedNow = ($groupChats.get()[group] || {}).stranded || {}
 
-      const responders = rotateGroupSpeakers(resolveGroupResponders(roomLog, members), round).filter(
+      const selection = coordinatorLed
+        ? resolveCoordinatorResponders(roomLog, members, coordinatorPolicy)
+        : { responders: resolveGroupResponders(roomLog, members) }
+
+      if ('error' in selection) {
+        coordinatorFailure()
+
+        return
+      }
+
+      const responders = rotateGroupSpeakers(selection.responders, round).filter(
         (member: GroupMember) => !Object.prototype.hasOwnProperty.call(strandedNow, groupMemberKey(member))
       )
 
@@ -739,7 +856,7 @@ export async function runGroupChatRounds(
         // one bounded continuation round for exactly those members. If none
         // exist (or the continuation also goes quiet), the room genuinely
         // settled.
-        const pendingKeys = unaddressedGroupMentions(group, members, thread)
+        const pendingKeys = coordinatorLed ? [] : unaddressedGroupMentions(group, members, thread)
 
         // #94478 review: bound continuation rounds independently of the
         // message cap so a pathological mention chain can't consume the
